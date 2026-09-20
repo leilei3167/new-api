@@ -409,6 +409,77 @@ func TestStreamResponseOpenAI2ClaudeGeminiBillingUsageOnStartAndDelta(t *testing
 	assert.Equal(t, 12, delta.Usage.BillingUsage.GeminiUsageMetadata.CandidatesTokenCount)
 }
 
+func TestStreamResponseOpenAI2ClaudeMergesLaterCacheAfterFinishUsage(t *testing.T) {
+	info := &convmeta.Values{
+		EstimatePromptTokens: 1520,
+		SendResponseCount:    1,
+		ClaudeConvertInfo:    &convmeta.ClaudeConvertInfo{LastMessagesType: convmeta.LastMessageTypeNone},
+	}
+
+	content := StreamResponseOpenAI2Claude(&dto.ChatCompletionsStreamResponse{
+		Id:    "chatcmpl_1",
+		Model: "gpt-test",
+		Choices: []dto.ChatCompletionsStreamResponseChoice{{
+			Delta: dto.ChatCompletionsStreamResponseChoiceDelta{Content: ptr("ok")},
+		}},
+	}, info)
+	require.NotEmpty(t, content)
+
+	info.SendResponseCount = 2
+	placeholderUsage := &dto.Usage{
+		PromptTokens:     1520,
+		CompletionTokens: 58,
+		TotalTokens:      1578,
+		PromptTokensDetails: dto.InputTokenDetails{
+			CachedTokens: 0,
+		},
+	}
+	finishChunk := &dto.ChatCompletionsStreamResponse{
+		Id:    "chatcmpl_1",
+		Model: "gpt-test",
+		Choices: []dto.ChatCompletionsStreamResponseChoice{{
+			Delta:        dto.ChatCompletionsStreamResponseChoiceDelta{Content: ptr("")},
+			FinishReason: ptr("stop"),
+		}},
+		Usage: placeholderUsage,
+	}
+	// handleClaudeFormat attaches this chunk's Usage before converting.
+	info.EnsureClaudeConvertInfo().Usage = placeholderUsage
+	finish := StreamResponseOpenAI2Claude(finishChunk, info)
+	for _, resp := range finish {
+		assert.NotEqual(t, "message_delta", resp.Type)
+		assert.NotEqual(t, "message_stop", resp.Type)
+	}
+	require.False(t, info.ClaudeConvertInfo.Done)
+
+	info.SendResponseCount = 3
+	final := StreamResponseOpenAI2Claude(&dto.ChatCompletionsStreamResponse{
+		Id:    "chatcmpl_1",
+		Model: "gpt-test",
+		Usage: &dto.Usage{
+			PromptTokens:     1520,
+			CompletionTokens: 58,
+			TotalTokens:      1578,
+			PromptTokensDetails: dto.InputTokenDetails{
+				CachedTokens: 1024,
+			},
+		},
+	}, info)
+	var delta *dto.ClaudeResponse
+	for _, resp := range final {
+		if resp.Type == "message_delta" {
+			delta = resp
+			break
+		}
+	}
+	require.NotNil(t, delta)
+	require.NotNil(t, delta.Usage)
+	assert.Equal(t, 1024, delta.Usage.CacheReadInputTokens)
+	assert.Equal(t, 58, delta.Usage.OutputTokens)
+	assert.Equal(t, "end_turn", *delta.Delta.StopReason)
+	assert.True(t, info.ClaudeConvertInfo.Done)
+}
+
 func TestNormalizeCacheCreationSplit(t *testing.T) {
 	cache5m, cache1h := NormalizeCacheCreationSplit(10, 3, 2)
 	assert.Equal(t, 8, cache5m)

@@ -398,6 +398,16 @@ func StreamResponseOpenAI2Claude(openAIResponse *dto.ChatCompletionsStreamRespon
 				// can carry both usage and the final stop reason.
 				return claudeResponses
 			}
+			// handleClaudeFormat aliases state.Usage to this chunk's Usage before
+			// converting. That finish_reason snapshot may still be followed by a
+			// choices:[] frame with the real cache_read_input_tokens. Merge already
+			// recorded this usage; keep the Claude stream open so the later overlay
+			// can reach message_delta. HandleFinalResponse pre-seeds a distinct
+			// accumulated Usage and converts the last chunk once, so that path
+			// still emits terminal events here.
+			if openAIResponse.Usage != nil && state.Usage == openAIResponse.Usage {
+				return claudeResponses
+			}
 			appendStopOpenBlocks()
 			claudeResponses = append(claudeResponses, &dto.ClaudeResponse{
 				Type:  "message_delta",
