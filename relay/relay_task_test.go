@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -402,6 +403,61 @@ func TestSharedTaskBillingExpressionSelectionAndFrozenSettlement(t *testing.T) {
 			assert.Equal(t, float64(2), info.TieredBillingSnapshot.UsageFacts[field])
 			assert.Equal(t, 2*info.TieredBillingSnapshot.EstimatedQuotaAfterGroup, result.ActualQuotaAfterGroup)
 			assert.Equal(t, tc.wantExpr, info.TieredBillingSnapshot.ExprString)
+		})
+	}
+}
+
+type noopTaskBillingSettler struct{}
+
+func (noopTaskBillingSettler) Settle(int) error         { return nil }
+func (noopTaskBillingSettler) Refund(*gin.Context)      {}
+func (noopTaskBillingSettler) NeedsRefund() bool        { return false }
+func (noopTaskBillingSettler) GetPreConsumedQuota() int { return 0 }
+func (noopTaskBillingSettler) Reserve(int) error        { return nil }
+
+func TestRelayTaskSubmitAcceptsCreatedAndAccepted(t *testing.T) {
+	savedPrices := ratio_setting.ModelPrice2JSONString()
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{"declared-model":0}`))
+	t.Cleanup(func() { require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedPrices)) })
+
+	for _, tc := range []struct {
+		name   string
+		status int
+		wantOK bool
+	}{
+		{name: "200 ok", status: http.StatusOK, wantOK: true},
+		{name: "201 created", status: http.StatusCreated, wantOK: true},
+		{name: "202 accepted", status: http.StatusAccepted, wantOK: true},
+		{name: "400 still fails", status: http.StatusBadRequest, wantOK: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"id":"vendor-job"}`))
+			}))
+			t.Cleanup(server.Close)
+
+			c, info := newTaskSubmitContext(t, "declared-model", "")
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, server.URL)
+			c.Set("group", "default")
+			info.UserGroup = "default"
+			info.UsingGroup = "default"
+			info.OriginModelName = "declared-model"
+			info.Billing = noopTaskBillingSettler{}
+			pinMappingOrderPlugin(t, c, mappingOrderSubmitPlugin)
+
+			result, taskErr := RelayTaskSubmit(c, info)
+			if tc.wantOK {
+				require.Nil(t, taskErr, "submission error: %+v", taskErr)
+				require.NotNil(t, result)
+				assert.Equal(t, "1", result.UpstreamTaskID)
+				return
+			}
+			require.NotNil(t, taskErr)
+			assert.Equal(t, "fail_to_fetch_task", taskErr.Code)
+			assert.Equal(t, tc.status, taskErr.StatusCode)
+			assert.Nil(t, result)
 		})
 	}
 }
