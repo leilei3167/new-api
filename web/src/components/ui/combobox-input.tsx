@@ -82,6 +82,7 @@ export function ComboboxInput({
   // from treating option clicks as outside presses.
   const [dropdown, setDropdown] = React.useState<{
     container: HTMLElement
+    position: 'fixed' | 'absolute'
     top: number
     left: number
     width: number
@@ -138,12 +139,30 @@ export function ComboboxInput({
     if (!input) return
     const container =
       input.closest<HTMLElement>('[role="dialog"]') ?? document.body
+    // A dialog's own fixed positioning (often combined with a centering
+    // transform) establishes a new containing block for its fixed/absolute
+    // descendants. Positioning the portaled dropdown with viewport
+    // coordinates in that case places it relative to the dialog instead of
+    // the viewport, so anchor it with `position: absolute` relative to the
+    // dialog's own box instead.
     const measure = () => {
       const rect = input.getBoundingClientRect()
+      if (container === document.body) {
+        setDropdown({
+          container,
+          position: 'fixed',
+          top: rect.bottom + 4,
+          left: rect.left,
+          width: rect.width,
+        })
+        return
+      }
+      const containerRect = container.getBoundingClientRect()
       setDropdown({
         container,
-        top: rect.bottom + 4,
-        left: rect.left,
+        position: 'absolute',
+        top: rect.bottom - containerRect.top + 4,
+        left: rect.left - containerRect.left,
         width: rect.width,
       })
     }
@@ -290,7 +309,7 @@ export function ComboboxInput({
           <div
             ref={dropdownRef}
             style={{
-              position: 'fixed',
+              position: dropdown.position,
               top: dropdown.top,
               left: dropdown.left,
               width: dropdown.width,
